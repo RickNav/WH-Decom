@@ -9,6 +9,7 @@ function Read-WorkSheetCSV {
 
         if(-not (Test-Path $csvFilePath)) {
             Write-Error "[$(Get-Date)] Error: CSV file not found at $csvFilePath"
+            throw "CSV file not found"
             exit 1
         }
 
@@ -21,13 +22,15 @@ function Read-WorkSheetCSV {
         }
         
         if(($csvContentObj[0].PSObject.Properties | ConvertTo-Json | ConvertFrom-Json).Length -ne $expectedColumns.Length) {
-            Write-Error "[$(Get-Date)] Error: CSV file does not contain the expected number of columns"
+            Write-Error "[$(Get-Date)] Error: Invalid CSV file format"
+            throw "Invalid CSV file format"
             exit 1
         }       
 
         $csvContentObj[0].PSObject.Properties | ForEach-Object {
             if($expectedColumns -notcontains $_.Name){
                 Write-Error "[$(Get-Date)] Error: CSV file does not contain the expected column $($_.Name)"
+                throw "Invalid CSV file format"
                 exit 1
             }
         }
@@ -77,7 +80,8 @@ function Connect-User {
     try {
         az login --tenant $tenantId --output none
         if ($LASTEXITCODE -ne 0) {
-            throw "[$(Get-Date)] Error: Failed to login to Azure."
+            Write-Error "[$(Get-Date)] Failed to login to Azure."
+            throw "Failed to login to Azure"
         }
         Write-Output "[$(Get-Date)] Successfully logged in to Azure."
     }
@@ -153,14 +157,42 @@ function Start-Decom {
     Write-Output "[$(Get-Date)] worksheet.csv file read and validated successfully."
     Write-Output "[$(Get-Date)] Verifying worksheet content."
 
+    Connect-User -subscription $subscription -tenantId $tenantId
+
     $ResourceIdsForDecom = [System.Collections.ArrayList]::new()
+    
+    $webappsFromCSV = [System.Collections.ArrayList]::new()
+    foreach($webApp in $csvSortedContentObj){
+        if($webApp.ResourceType -eq "Microsoft.Web/sites"){
+            $webappsFromCSV.Add($webApp.ResourceName) | Out-Null
+        }
+    }
+
+
+    $csvSortedContentObj | ForEach-Object{
+        
+        Write-Output "[$(Get-Date)] Checking if the resource $($_.ResourceName) exist in azure portal"
+        $resource = az resource show --ids "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)" | ConvertFrom-Json
+        
+        if($null -eq $resource -and $LASTEXITCODE -ne 0) {
+            Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the CSV file."
+            Write-Error "[$(Get-Date)] Error: resourceId: /subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
+            throw "Resource not found"
+            exit 1
+        }
+        else {
+            Write-Output "[$(Get-Date)] [Verified] resourceId: $($resource.id)"
+        }
+
+    }
+
 
     $csvSortedContentObj | ForEach-Object{
 
         $resource = az resource show --ids "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)" | ConvertFrom-Json
         
-        if($resource -eq $null) {
-            Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the worksheet.csv file."
+        if($null -eq $resource -and $LASTEXITCODE -ne 0) {
+            Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the CSV file."
             Write-Error "[$(Get-Date)] Error: resourceId: /subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
             exit 1
         }
@@ -174,25 +206,52 @@ function Start-Decom {
                     Write-Output "[$(Get-Date)] Web App $($_.ResourceName) is running."
                     Write-Output "[$(Get-Date)] Please stop the web app before running the script."
                     Write-Output "[$(Get-Date)] Exiting proccess."
+                    throw "Web app is still running"
                     exit 1
                 }
+
+                if ((az webapp vnet-integration list -g $webApp.resourceGroup -n $webApp.name | ConvertFrom-Json).Count -gt 0) {
+                    # Disconnect web app from VNet integration
+                    Write-Output "[$(Get-Date)] Disconnecting web app from VNet integration..."
+                    try {
+                        az webapp vnet-integration remove --name $resource.name --resource-group $resource.resourceGroup
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to disconnect web app from VNet integration"
+                        }
+                        Write-Output "[$(Get-Date)] Successfully disconnected web app from VNet integration."
+                    }
+                    catch {
+                        Write-Error $_
+                        exit 1
+                    }
+                }
+                $ResourceIdsForDecom.Add($resource) | Out-Null
             }
 
             # Check if the resource is an App Service Plan and if it still has web apps
             if ($_.ResourceType -eq "Microsoft.Web/serverfarms") {
                 Write-Output "[$(Get-Date)] Verifying Microsoft.Web/serverfarms ..."
                 $webAppsInAsp = az webapp list --query "[?appServicePlanId=='$($resource.id)']" | ConvertFrom-Json
-                # If the web app in ASP count is greater than 1, then the ASP still shared
-                if($webAppsInAsp.Count -gt 1) { 
-                    Write-Output "[$(Get-Date)] App Service Plan $($_.ResourceName) still has web apps $($webAppsInAsp.name)."
-                    Write-Output "[$(Get-Date)] Please move the web apps to another App Service Plan before running the script."
-                    Write-Output "[$(Get-Date)] Exiting proccess."
-                    exit 1
+                if($null -ne $webAppsInAsp){
+                    # If the web app in ASP count is greater than 0, then the ASP still shared
+                    if($webAppsInAsp.Count -gt 0) { 
+                        if($webAppsInAsp.Count -ne $webappsFromCSV.Count){
+                            Write-Output "[$(Get-Date)] $($_.ResourceName) is shared but listed to be decommissioned"
+                            Write-Output "[$(Get-Date)] $($_.ResourceName) is shared between the following sites:"
+                            $webAppsInAsp.name | Format-Table
+                            Write-Output "[$(Get-Date)] Listed webapp for decommision:"
+                            $webappsFromCSV | Format-Table
+                            Write-Output "[$(Get-Date)] Check the list before running the script"
+                            exit 1
+                        }
+                        $ResourceIdsForDecom.Add($resource) | Out-Null
+                    }
+                    else {
+                        Write-Output "[$(Get-Date)] $($_.ResourceName) is not shared and listed to be decommissioned."
+                        $ResourceIdsForDecom.Add($resource) | Out-Null
+                    }
                 }
-                # Else the web app in ASP count is 1, then the ASP is not shared and can be decommissioned
             }
-
-            $ResourceIdsForDecom.Add($resource) | Out-Null
         }
     }
 
@@ -202,7 +261,7 @@ function Start-Decom {
         $DecomRemarks = ""
 
         Write-Output "[$(Get-Date)] Decommissioning $($resource.name) ..."
-        az resource delete --ids $resource.id
+        # az resource delete --ids $resource.id
         if ($LASTEXITCODE -ne 0) {
             Write-Error "[$(Get-Date)] Error: Failed to decommission resource: $($resource.name) with ResourceId: $($resource.id)."
             $DecomStatus = "Failed"
@@ -223,7 +282,7 @@ function Start-Decom {
             Date = Get-Date
         }
 
-        $decommissionedResources.Add($decommissionedResource)
+        $decommissionedResources.Add($decommissionedResource) | Out-Null
 
     }
 
@@ -232,5 +291,3 @@ function Start-Decom {
     Write-Output "[$(Get-Date)] Decommissioning process completed successfully."
 
 }
-
-Start-Decom -csvFilePath .\worksheet.csv -ResourceTypeCustomSortCsvPath .\ResourceTypeCustomSort.csv -subscription "2d1c7006-7070-45e4-a17a-c791cad26905" -tenantId "b3f4f7c2-72ce-4192-aba4-d6c7719b5766"

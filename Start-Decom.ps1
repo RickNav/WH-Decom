@@ -8,7 +8,6 @@ function Read-WorkSheetCSV {
     process {
 
         if(-not (Test-Path $csvFilePath)) {
-            # Write-Error "[$(Get-Date)] Error: CSV file not found at $csvFilePath"
             throw "CSV file not found"
         }
 
@@ -16,18 +15,15 @@ function Read-WorkSheetCSV {
         $expectedColumns = @("SubscriptionId", "ResourceGroup", "ResourceName", "ResourceType", "Environment")
 
         if($null -eq $csvContentObj) {
-            # Write-Error "[$(Get-Date)] Error: Unable to read CSV file. File may be empty or not in the correct format."
             throw "Unable to read CSV file"
         }
         
         if(($csvContentObj[0].PSObject.Properties | ConvertTo-Json | ConvertFrom-Json).Length -ne $expectedColumns.Length) {
-            # Write-Error "[$(Get-Date)] Error: Invalid CSV file format"
             throw "Invalid CSV file format"
         }       
 
         $csvContentObj[0].PSObject.Properties | ForEach-Object {
             if($expectedColumns -notcontains $_.Name){
-                # Write-Error "[$(Get-Date)] Error: CSV file does not contain the expected column $($_.Name)"
                 throw "Invalid CSV file format"
             }
         }
@@ -38,7 +34,6 @@ function Read-WorkSheetCSV {
                 $null -eq $_.ResourceName -or $_.ResourceName -eq "" -or `
                 $null -eq $_.ResourceType -or $_.ResourceType -eq "" -or `
                 $null -eq $_.Environment -or $_.Environment -eq "") {
-                # Write-Error "[$(Get-Date)] Error: Empty column detected"
                 throw "Empty column detected"
             }
         }
@@ -210,7 +205,9 @@ function Start-Decom {
         [string]$subscription,
 
         [Parameter(Mandatory=$true)]
-        [string]$tenantId
+        [string]$tenantId,
+
+        [switch] $Test
     )
     
     Write-Output "[$(Get-Date)] Starting Decommissioning process..."
@@ -255,7 +252,6 @@ function Start-Decom {
         
         Write-Output "[$(Get-Date)] Checking if the resource $($_.ResourceName) exist in azure portal"
         $resource = Get-Resource -resourceId "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
-        
 
         if($null -eq $resource -and $LASTEXITCODE -ne 0) {
             Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the CSV file."
@@ -306,13 +302,17 @@ function Start-Decom {
                 if ($webAppIntegration.Count -gt 0) {
                     # Disconnect web app from VNet integration
                     Write-Output "[$(Get-Date)] Disconnecting web app from VNet integration..."
-                    if(Disconnect-VnetIntegration -resourceGroup $resource.resourceGroup -webappName $resource.name){
-                        Write-Output "[$(Get-Date)] Successfully disconnected web app from VNet integration."
+                    if($Test){
+                        # Disconnect Vnet Integration
                     }
-                    else{
-                        throw "Failed to disconnected web app from VNet integration"
+                    else {
+                        if(Disconnect-VnetIntegration -resourceGroup $resource.resourceGroup -webappName $resource.name){
+                            Write-Output "[$(Get-Date)] Successfully disconnected web app from VNet integration."
+                        }
+                        else{
+                            throw "Failed to disconnected web app from VNet integration"
+                        }
                     }
-                        
                 }
                 $ResourceIdsForDecom.Add($resource) | Out-Null
             }
@@ -352,7 +352,15 @@ function Start-Decom {
         $DecomRemarks = ""
 
         Write-Output "[$(Get-Date)] Decommissioning $($resource.name) ..."
-        $isDeleted = Remove-ResourceById -resourceId $resource.id
+        $isDeleted = $true
+        
+        if($Test){
+            # Delete resource by Id
+        }
+        else {
+            $isDeleted = Remove-ResourceById -resourceId $resource.id
+        }
+
         if ($isDeleted) {
             $DecomStatus = "Deleted"
             $DecomRemarks = "Successfully decommissioned"

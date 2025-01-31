@@ -59,9 +59,11 @@ Describe "Connect-User" {
 
     BeforeEach{
         Mock az {   
-            if($args -contains "login" -and $args -contains "--tenant" -and $args -contains "valid-tenant-id"){
-                return $true
-            }
+            return '[{ "tenantId": "valid-tenant-id" }]'
+        } -ParameterFilter {
+            $args -contains "login" -and 
+            $args -contains "--tenant" -and 
+            $args -contains "valid-tenant-id"
         }
     }
 
@@ -84,9 +86,18 @@ Describe "Set-Subscription" {
 
     BeforeEach{
         Mock az {   
-            if($args -contains "account" -and $args -contains "set" -and $args -contains "--subscription" -and $args -contains "valid-subscription-id"){
-                return $true
-            }
+            return '{ "id": "valid-subscription-id" }'
+        } -ParameterFilter {
+            $args -contains "account" -and 
+            $args -contains "show" -and 
+            $args -contains "--subscription" -and 
+            $args -contains "valid-subscription-id"
+        }
+        Mock az { } -ParameterFilter {
+            $args -contains "account" -and 
+            $args -contains "set" -and 
+            $args -contains "--subscription" -and 
+            $args -contains "valid-subscription-id"
         }
     }
 
@@ -107,9 +118,18 @@ Describe "Set-Subscription" {
 
 Describe "Disconnect-VnetIntegration" {
     BeforeEach{
-        Mock az { 
-                return $true
-        } -ParameterFilter{
+        Mock az {   
+            return '[{ "id": "valid-id" }]'
+        } -ParameterFilter {
+            $args -contains "webapp" -and 
+            $args -contains "vnet-integration" -and 
+            $args -contains "list" -and 
+            $args -contains "--name" -and 
+            $args -contains "valid-webapp" -and 
+            $args -contains "--resource-group" -and 
+            $args -contains "valid-resourcegroup"
+        }
+        Mock az { } -ParameterFilter {
             $args -contains "webapp" -and 
             $args -contains "vnet-integration" -and 
             $args -contains "remove" -and 
@@ -186,7 +206,7 @@ Describe "Get-Resource" {
         $result.id | Should -Be "valid-id"
     }
 
-    It "Throw ResourceNotFound if resource dont exist" {
+    It "Throw ResourceNotFound if resource do not exist" {
         { Get-Resource -resourceId "invalid-id" } | Should -Throw "ResourceNotFound"
     }
 }
@@ -244,4 +264,39 @@ Describe "Get-WebApp" {
     It "Throw ResourceNotFound if web app dont exist" {
         { Get-WebApp -resourceGroup "valid-resourcegroup" -resourceName "invalid-webapp" } | Should -Throw "ResourceNotFound"
     }
+}
+
+Describe "Remove-ResourceById" {
+
+    BeforeEach {
+        Mock Get-Resource {
+            return @{ id = "valid-id" }
+        } -ParameterFilter {
+            $resourceId -eq "valid-id"
+        }
+        
+        Mock az {
+            return $true
+        } -ParameterFilter {
+            $args -contains "resource" -and
+            $args -contains "delete" -and
+            $args -contains "--ids" -and
+            $args -contains "valid-id"
+        }
+    } 
+
+    AfterEach{
+        $global:LASTEXITCODE = $null
+    }
+
+    It "Return valid id if deletion is successfull" {
+        $result = Remove-ResourceById -resourceId "valid-id"
+        $result | Should -BeTrue
+    }
+
+    It "Return false if resource do not exist" {
+        $result = Remove-ResourceById -resourceId "invalid-id"
+        $result | Should -BeFalse
+    }
+
 }

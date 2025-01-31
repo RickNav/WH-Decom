@@ -8,100 +8,60 @@ function Read-WorkSheetCSV {
     process {
 
         if(-not (Test-Path $csvFilePath)) {
-            Write-Error "[$(Get-Date)] Error: CSV file not found at $csvFilePath"
+            # Write-Error "[$(Get-Date)] Error: CSV file not found at $csvFilePath"
             throw "CSV file not found"
-            exit 1
         }
 
         $csvContentObj = Import-Csv -Path $csvFilePath
         $expectedColumns = @("SubscriptionId", "ResourceGroup", "ResourceName", "ResourceType", "Environment")
 
         if($null -eq $csvContentObj) {
-            Write-Error "[$(Get-Date)] Error: Unable to read CSV file. File may be empty or not in the correct format."
-            exit 1
+            # Write-Error "[$(Get-Date)] Error: Unable to read CSV file. File may be empty or not in the correct format."
+            throw "Unable to read CSV file"
         }
         
         if(($csvContentObj[0].PSObject.Properties | ConvertTo-Json | ConvertFrom-Json).Length -ne $expectedColumns.Length) {
-            Write-Error "[$(Get-Date)] Error: Invalid CSV file format"
+            # Write-Error "[$(Get-Date)] Error: Invalid CSV file format"
             throw "Invalid CSV file format"
-            exit 1
         }       
 
         $csvContentObj[0].PSObject.Properties | ForEach-Object {
             if($expectedColumns -notcontains $_.Name){
-                Write-Error "[$(Get-Date)] Error: CSV file does not contain the expected column $($_.Name)"
+                # Write-Error "[$(Get-Date)] Error: CSV file does not contain the expected column $($_.Name)"
                 throw "Invalid CSV file format"
-                exit 1
             }
         }
 
         $csvContentObj | ForEach-Object {
-
-            if($null -eq $_.SubscriptionId -or $_.SubscriptionId -eq "") {
-                Write-Error "[$(Get-Date)] Error: Empty column in SubscriptionId detected"
-                exit 1
+            if($null -eq $_.SubscriptionId -or $_.SubscriptionId -eq "" -or `
+                $null -eq $_.ResourceGroup -or $_.ResourceGroup -eq "" -or `
+                $null -eq $_.ResourceName -or $_.ResourceName -eq "" -or `
+                $null -eq $_.ResourceType -or $_.ResourceType -eq "" -or `
+                $null -eq $_.Environment -or $_.Environment -eq "") {
+                # Write-Error "[$(Get-Date)] Error: Empty column detected"
+                throw "Empty column detected"
             }
-
-            if($null -eq $_.ResourceGroup -or $_.ResourceGroup -eq "") {
-                Write-Error "[$(Get-Date)] Error: Empty column in ResourceGroup detected"
-                exit 1
-            }
-
-            if($null -eq $_.ResourceName -or $_.ResourceName -eq "") {
-                Write-Error "[$(Get-Date)] Error: Empty column in ResourceName detected"
-                exit 1
-            }
-
-            if($null -eq $_.ResourceType -or $_.ResourceType -eq "") {
-                Write-Error "[$(Get-Date)] Error: Empty column in ResourceType detected"
-                exit 1
-            }
-
-            if($null -eq $_.Environment -or $_.Environment -eq "") {
-                Write-Error "[$(Get-Date)] Error: Empty column in Environment detected"
-                exit 1
-            }
-
         }
         return $csvContentObj
     }
 }
 
+function Set-Subscription {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string] $subscription
+    )
+    az account set --subscription $subscription
+    return $LASTEXITCODE -eq 0
+}
+
 function Connect-User {
     param (
         [Parameter(Mandatory=$true)]
-        [string]$subscription,
-
-        [Parameter(Mandatory=$true)]
         [string]$tenantId
     )
-
-    Write-Output "[$(Get-Date)] Connecting to Azure..."
-    try {
-        az login --tenant $tenantId --output none
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "[$(Get-Date)] Failed to login to Azure."
-            throw "Failed to login to Azure"
-        }
-        Write-Output "[$(Get-Date)] Successfully logged in to Azure."
-    }
-    catch {
-        Write-Error $_
-        exit 1
-    }
-
-    Write-Output "[$(Get-Date)] Setting subscription to $subscription..."
-    try {
-        az account set --subscription $subscription --output none
-        if ($LASTEXITCODE -ne 0) {
-            throw "[$(Get-Date)] Error: Failed to set subscription to $subscription."
-        }
-        Write-Output "[$(Get-Date)] Successfully set subscription to $subscription."
-    }
-    catch {
-        Write-Error $_
-        exit 1
-    }
+    az login --tenant $tenantId 
+    return $LASTEXITCODE -eq 0
 }
 
 function Sort-Resources {
@@ -126,6 +86,84 @@ function Sort-Resources {
 
     return $sortedCsvContentObj
     
+}
+
+function Disconnect-VnetIntegration {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string] $resourceGroup,
+
+        [Parameter(Mandatory=$true)]
+        [string] $webappName
+
+    )
+    az webapp vnet-integration remove --name $webappName --resource-group $resourceGroup
+    return $LASTEXITCODE -eq 0
+}
+
+function Get-WebAppVnetIntegration {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$resourceGroup,
+
+        [Parameter(Mandatory=$true)]
+        [string]$resourceName
+    )
+    
+    $webAppIntegration = az webapp vnet-integration list --resource-group $resourceGroup --name $resourceName | ConvertFrom-Json
+    
+    if($null -eq $webAppIntegration) {
+        throw "ResourceNotFound"
+    }
+    else {
+        return $webAppIntegration
+    }
+}
+
+function Get-Resource{
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$resourceId
+        
+    )
+    
+    $resource = az resource show --ids $resourceId | ConvertFrom-Json
+
+    if($null -eq $resource) {
+        throw "ResourceNotFound"
+    }
+    else {
+        return $resource
+    }
+}
+
+function Get-WebAppByAspId {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$resourceId
+    )
+    return az webapp list --query "[?appServicePlanId=='$resourceId']" | ConvertFrom-Json
+}
+
+function Get-WebApp{
+    param(
+
+        [Parameter(Mandatory=$true)]
+        [string]$resourceGroup,
+
+        [Parameter(Mandatory=$true)]
+        [string]$resourceName
+    )
+    
+    $webApp = az webapp show --resource-group $resourceGroup --name $resourceName | ConvertFrom-Json
+    
+    if($null -eq $webApp) {
+        throw "ResourceNotFound"
+    }
+    else {
+        return $webApp
+    }
+
 }
 
 function Start-Decom {
@@ -156,15 +194,28 @@ function Start-Decom {
 
     Write-Output "[$(Get-Date)] worksheet.csv file read and validated successfully."
     Write-Output "[$(Get-Date)] Verifying worksheet content."
+    Write-Output "[$(Get-Date)] Connecting to Azure..."
 
-    Connect-User -subscription $subscription -tenantId $tenantId
+    if(Connect-User -tenantId $tenantId){
+        Write-Output "[$(Get-Date)] Successfully logged in to Azure."
+    }
+    else{
+        throw "Failed to login to Azure"
+    }
+    Write-Output "[$(Get-Date)] Setting subscription to $subscription..."
+    if(Set-Subscription -subscription $subscription){
+        Write-Output "[$(Get-Date)] Successfully set to subscription $($subscription)"
+    }
+    else {
+        throw "Failed to set subscription"
+    }
 
     $ResourceIdsForDecom = [System.Collections.ArrayList]::new()
     
     $webappsFromCSV = [System.Collections.ArrayList]::new()
     foreach($webApp in $csvSortedContentObj){
         if($webApp.ResourceType -eq "Microsoft.Web/sites"){
-            $webappsFromCSV.Add($webApp.ResourceName) | Out-Null
+            $webappsFromCSV.Add($webApp) | Out-Null
         }
     }
 
@@ -172,13 +223,13 @@ function Start-Decom {
     $csvSortedContentObj | ForEach-Object{
         
         Write-Output "[$(Get-Date)] Checking if the resource $($_.ResourceName) exist in azure portal"
-        $resource = az resource show --ids "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)" | ConvertFrom-Json
+        $resource = Get-Resource -resourceId "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
         
+
         if($null -eq $resource -and $LASTEXITCODE -ne 0) {
             Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the CSV file."
             Write-Error "[$(Get-Date)] Error: resourceId: /subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
             throw "Resource not found"
-            exit 1
         }
         else {
             Write-Output "[$(Get-Date)] [Verified] resourceId: $($resource.id)"
@@ -186,10 +237,21 @@ function Start-Decom {
 
     }
 
+    # Check if web app is still on runnning state
+    $webappsFromCSV  | ForEach-Object {
+        $webApp = Get-WebApp -resourceGroup $_.ResourceGroup -resourceName $_.ResourceName
+        
+        if ($webApp.state -eq "Running") {
+            Write-Output "[$(Get-Date)] Web App $($_.ResourceName) is running."
+            Write-Output "[$(Get-Date)] Please stop the web app before running the script."
+            Write-Output "[$(Get-Date)] Exiting proccess."
+            throw "Web app is still running"
+        }
+    }
 
     $csvSortedContentObj | ForEach-Object{
 
-        $resource = az resource show --ids "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)" | ConvertFrom-Json
+        $resource = Get-Resource -resourceId "/subscriptions/$($_.SubscriptionId)/resourceGroups/$($_.ResourceGroup)/providers/$($_.ResourceType)/$($_.ResourceName)"
         
         if($null -eq $resource -and $LASTEXITCODE -ne 0) {
             Write-Error "[$(Get-Date)] Error: Resource not found. Please verify the resource details in the CSV file."
@@ -201,29 +263,25 @@ function Start-Decom {
             # Check if the resource is a web app and if it is running
             if ($_.ResourceType -eq "Microsoft.Web/sites") {
                 Write-Output "[$(Get-Date)] Verifying Microsoft.Web/sites ..."
-                $webApp = az webapp show --resource-group $($_.ResourceGroup) --name $($_.ResourceName) | ConvertFrom-Json
+                $webApp = Get-WebApp -resourceGroup $_.ResourceGroup -resourceName $_.ResourceName
                 if ($webApp.state -eq "Running") {
                     Write-Output "[$(Get-Date)] Web App $($_.ResourceName) is running."
                     Write-Output "[$(Get-Date)] Please stop the web app before running the script."
                     Write-Output "[$(Get-Date)] Exiting proccess."
                     throw "Web app is still running"
-                    exit 1
                 }
 
-                if ((az webapp vnet-integration list -g $webApp.resourceGroup -n $webApp.name | ConvertFrom-Json).Count -gt 0) {
+                $webAppIntegration = Get-WebAppVnetIntegration -resourceGroup $webApp.resourceGroup -resourceName $webApp.name
+                if ($webAppIntegration.Count -gt 0) {
                     # Disconnect web app from VNet integration
                     Write-Output "[$(Get-Date)] Disconnecting web app from VNet integration..."
-                    try {
-                        az webapp vnet-integration remove --name $resource.name --resource-group $resource.resourceGroup
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Failed to disconnect web app from VNet integration"
-                        }
+                    if(Disconnect-VnetIntegration -resourceGroup $resource.resourceGroup -webappName $resource.name){
                         Write-Output "[$(Get-Date)] Successfully disconnected web app from VNet integration."
                     }
-                    catch {
-                        Write-Error $_
-                        exit 1
+                    else{
+                        throw "Failed to disconnected web app from VNet integration"
                     }
+                        
                 }
                 $ResourceIdsForDecom.Add($resource) | Out-Null
             }
@@ -231,7 +289,7 @@ function Start-Decom {
             # Check if the resource is an App Service Plan and if it still has web apps
             if ($_.ResourceType -eq "Microsoft.Web/serverfarms") {
                 Write-Output "[$(Get-Date)] Verifying Microsoft.Web/serverfarms ..."
-                $webAppsInAsp = az webapp list --query "[?appServicePlanId=='$($resource.id)']" | ConvertFrom-Json
+                $webAppsInAsp = Get-WebAppByAspId -resourceId $resource.id
                 if($null -ne $webAppsInAsp){
                     # If the web app in ASP count is greater than 0, then the ASP still shared
                     if($webAppsInAsp.Count -gt 0) { 
@@ -240,10 +298,12 @@ function Start-Decom {
                             Write-Output "[$(Get-Date)] $($_.ResourceName) is shared between the following sites:"
                             $webAppsInAsp.name | Format-Table
                             Write-Output "[$(Get-Date)] Listed webapp for decommision:"
-                            $webappsFromCSV | Format-Table
+                            $webappsFromCSV.ResourceName | Format-Table
                             Write-Output "[$(Get-Date)] Check the list before running the script"
-                            exit 1
+                            throw "Microsoft.Web/serverfarms is shared but listed to be decommissioned"
                         }
+                        Write-Output "[$(Get-Date)] $($_.ResourceName) is shared and listed to be decommissioned."
+                        Write-Output "[$(Get-Date)] All webapps under $($_.ResourceName) is listed to be decommissioned."
                         $ResourceIdsForDecom.Add($resource) | Out-Null
                     }
                     else {

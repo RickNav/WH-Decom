@@ -51,8 +51,14 @@ function Set-Subscription {
         [Parameter(Mandatory=$true)]
         [string] $subscription
     )
-    az account set --subscription $subscription
-    return $LASTEXITCODE -eq 0
+    $account = az account show --subscription $subscription | ConvertFrom-Json
+    if(-not $null -eq $account){
+        az account set --subscription $account.id
+        return $true
+    }
+    else {
+        return $false
+    }
 }
 
 function Connect-User {
@@ -60,8 +66,13 @@ function Connect-User {
         [Parameter(Mandatory=$true)]
         [string]$tenantId
     )
-    az login --tenant $tenantId 
-    return $LASTEXITCODE -eq 0
+    $tenants = az login --tenant $tenantId | ConvertFrom-Json
+    if(-not $null -eq $tenants){
+        return $true
+    } 
+    else {
+        return $false
+    }
 }
 
 function Sort-Resources {
@@ -97,8 +108,14 @@ function Disconnect-VnetIntegration {
         [string] $webappName
 
     )
-    az webapp vnet-integration remove --name $webappName --resource-group $resourceGroup
-    return $LASTEXITCODE -eq 0
+    $vnet = az webapp vnet-integration list --resource-group $resourceGroup --name $webappName | ConvertFrom-Json
+    if(-not $null -eq $vnet){
+        az webapp vnet-integration remove --name $webappName --resource-group $resourceGroup
+        return $true
+    }
+    else{
+        return $false
+    }
 }
 
 function Get-WebAppVnetIntegration {
@@ -124,7 +141,6 @@ function Get-Resource{
     param(
         [Parameter(Mandatory=$true)]
         [string]$resourceId
-        
     )
     
     $resource = az resource show --ids $resourceId | ConvertFrom-Json
@@ -164,6 +180,21 @@ function Get-WebApp{
         return $webApp
     }
 
+}
+
+function Remove-ResourceById {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string] $resourceId
+    )
+    try {
+        $resource = Get-Resource -resourceId $resourceId
+        az resource delete --ids $resource.id
+        return $true
+    }
+    catch {
+        return $false
+    }
 }
 
 function Start-Decom {
@@ -321,15 +352,15 @@ function Start-Decom {
         $DecomRemarks = ""
 
         Write-Output "[$(Get-Date)] Decommissioning $($resource.name) ..."
-        # az resource delete --ids $resource.id
-        if ($LASTEXITCODE -ne 0) {
+        $isDeleted = Remove-ResourceById -resourceId $resource.id
+        if ($isDeleted) {
+            $DecomStatus = "Deleted"
+            $DecomRemarks = "Successfully decommissioned"
+        }
+        else {
             Write-Error "[$(Get-Date)] Error: Failed to decommission resource: $($resource.name) with ResourceId: $($resource.id)."
             $DecomStatus = "Failed"
             $DecomRemarks = "Failed to decommission"
-        }
-        else {
-            $DecomStatus = "Deleted"
-            $DecomRemarks = "Successfully decommissioned"
         }
 
         $decommissionedResource = [PSCustomObject]@{
